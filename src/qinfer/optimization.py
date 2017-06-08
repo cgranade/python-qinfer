@@ -24,17 +24,16 @@
 
 ## FEATURES ##################################################################
 
-from __future__ import division 
-from __future__ import absolute_import
-from __future__ import print_function
+from __future__ import division, absolute_import, print_function
 
 ## EXPORTS ###################################################################
 
 __all__ = [
-    'ParticleSwarmOptimizer', 
+    'ParticleSwarmOptimizer',
     'ParticleSwarmSimpleAnnealingOptimizer',
-    'ParticleSwarmTemperingOptimizer', 
+    'ParticleSwarmTemperingOptimizer',
     'SPSATwoSiteOptimizer',
+    'Fitness',
     'HeuristicPerformanceFitness'
 ]
 
@@ -57,39 +56,42 @@ class Optimizer(with_metaclass(ABCMeta, object)):
     A generic optimizer class that is inherited by the other optimisation functions.
 
     :param np.ndarray param_names: The list of parameters that are being searched over.
-    :param function fitness_function: The function that is being optimised over, defaults to perf test multiple
-    :param function boundary_map: Function to constrain points within some boundary regime
-    :param dict funct_args: Arguments to pass to the fitness function
-    :param dict funct_kwargs: Keyword arguments to pass to the fitness function
+    :param fitness_function: The fitness function to be optimized. If no function is
+        specified, defaults to optimizing heuristic performance using
+        :class:`~qinfer.HeuristicPerformanceFitness`.
+    :type fitness_function: `callable`, :func:`~qinfer.Fitness`, or `partial`.
+    :param callable projection_fn: Function to project points onto feasible solutions.
+        If `None`, no projection is performed and the optimization problem is taken to
+        be unconstrained.
+    :param dict funct_args: Arguments to pass to the fitness function.
+    :param dict funct_kwargs: Keyword arguments to pass to the fitness function.
     '''
 
-    def __init__(
-                self,
-                param_names,
-                fitness_function = None,
-                boundary_map=None,
-                *funct_args,
-                **funct_kwargs
-                ):
+    def __init__(self,
+                 param_names, fitness_function=None, projection_fn=None,
+                 *funct_args, **funct_kwargs):
+
         self._param_names = param_names
         self._n_free_params = len(param_names)
-        self._boundary_map = boundary_map
+        self._projection_fn = projection_fn
         self._funct_args = funct_args
         self._funct_kwargs = funct_kwargs
-        
+
         if fitness_function is None: # Default to calling perf test multiple
             self._fitness_function = HeuristicPerformanceFitness(
                 self._param_names,
                 *self._funct_args,
                 **self._funct_kwargs
             )
-        else: 
-            self._fitness_function = partial(fitness_function, *self._funct_args, **self._funct_kwargs)
+        else:
+            self._fitness_function = partial(
+                fitness_function, *self._funct_args, **self._funct_kwargs
+            )
 
     # Member function needed for parralelisation
     def fitness_function(self, params):
         return self._fitness_function(params)
-    
+
     def parallel(self):
         raise NotImplementedError("This optimizer does not have parallel support.")
 
@@ -135,7 +137,7 @@ class ParticleSwarmOptimizer(Optimizer):
         global_attractor = np.empty([1], dtype=self.fitness_dt())
 
         if initial_position_distribution is None:
-            initial_position_distribution = distributions.UniformDistribution(np.array([[ 0, 1]] * self._n_free_params));
+            initial_position_distribution = distributions.UniformDistribution(np.array([[ 0, 1]] * self._n_free_params))
             
         if initial_velocity_distribution is None:
             initial_velocity_distribution = distributions.UniformDistribution(np.array([[-1, 1]] * self._n_free_params))
@@ -144,8 +146,8 @@ class ParticleSwarmOptimizer(Optimizer):
         self._fitness[0]["params"] = initial_position_distribution.sample(n_pso_particles)
             
         # Apply the boundary conditions if any exist
-        if self._boundary_map is not None:
-            self._fitness[0]["params"] = self._boundary_map(self._fitness[0]["params"])
+        if self._projection_fn is not None:
+            self._fitness[0]["params"] = self._projection_fn(self._fitness[0]["params"])
 
         # Calculate the initial particle fitnesses
         self._fitness[0]["fitness"] = self.evaluate_fitness(self._fitness[0]["params"], 
@@ -174,8 +176,8 @@ class ParticleSwarmOptimizer(Optimizer):
                 self._fitness[itr - 1]["velocities"])
 
             # Apply the boundary conditions if any exist
-            if self._boundary_map is not None:
-                self._fitness[itr]["params"] = self._boundary_map(self._fitness[itr]["params"])
+            if self._projection_fn is not None:
+                self._fitness[itr]["params"] = self._projection_fn(self._fitness[itr]["params"])
 
             # Recalculate the fitness function
             self._fitness[itr]["fitness"] = self.evaluate_fitness(
@@ -245,8 +247,8 @@ class ParticleSwarmSimpleAnnealingOptimizer(ParticleSwarmOptimizer):
         self._fitness[0]["params"] = initial_position_distribution.sample(n_pso_particles)
             
         # Apply the boundary conditions if any exist
-        if self._boundary_map is not None:
-            self._fitness[0]["params"] = self._boundary_map(self._fitness[0]["params"])
+        if self._projection_fn is not None:
+            self._fitness[0]["params"] = self._projection_fn(self._fitness[0]["params"])
 
         # Calculate the initial particle fitnesses
         self._fitness[0]["fitness"] = self.evaluate_fitness(self._fitness[0]["params"], 
@@ -275,8 +277,8 @@ class ParticleSwarmSimpleAnnealingOptimizer(ParticleSwarmOptimizer):
                 self._fitness[itr - 1]["velocities"])
 
             # Apply the boundary conditions if any exist
-            if self._boundary_map is not None:
-                self._fitness[itr]["params"] = self._boundary_map(self._fitness[itr]["params"])
+            if self._projection_fn is not None:
+                self._fitness[itr]["params"] = self._projection_fn(self._fitness[itr]["params"])
 
             # Recalculate the fitness function
             self._fitness[itr]["fitness"] = self.evaluate_fitness(
@@ -356,8 +358,8 @@ class ParticleSwarmTemperingOptimizer(ParticleSwarmOptimizer):
         self._fitness[0]["params"] = initial_position_distribution.sample(n_pso_particles)
             
         # Apply the boundary conditions if any exist
-        if self._boundary_map is not None:
-            self._fitness[0]["params"] = self._boundary_map(self._fitness[0]["params"])
+        if self._projection_fn is not None:
+            self._fitness[0]["params"] = self._projection_fn(self._fitness[0]["params"])
 
         # Calculate the initial particle fitnesses
         self._fitness[0]["fitness"] = self.evaluate_fitness(self._fitness[0]["params"], 
@@ -391,8 +393,8 @@ class ParticleSwarmTemperingOptimizer(ParticleSwarmOptimizer):
                 self._fitness[itr - 1]["velocities"])
 
             # Apply the boundary conditions if any exist
-            if self._boundary_map is not None:
-                self._fitness[itr]["params"] = self._boundary_map(self._fitness[itr]["params"])
+            if self._projection_fn is not None:
+                self._fitness[itr]["params"] = self._projection_fn(self._fitness[itr]["params"])
 
             # Recalculate the fitness function
             self._fitness[itr]["fitness"] = self.evaluate_fitness(
@@ -486,8 +488,8 @@ class SPSATwoSiteOptimizer(Optimizer):
         self._fitness[0]["params"] = initial_position_distribution.sample(n_spsa_particles)
             
         # Apply the boundary conditions if any exist
-        if self._boundary_map is not None:
-            self._fitness[0]["params"] = self._boundary_map(self._fitness[0]["params"])
+        if self._projection_fn is not None:
+            self._fitness[0]["params"] = self._projection_fn(self._fitness[0]["params"])
 
         # Calculate the initial particle fitnesses
         self._fitness[0]["fitness"] = self.evaluate_fitness(self._fitness[0]["params"], 
@@ -519,8 +521,8 @@ class SPSATwoSiteOptimizer(Optimizer):
                 self._fitness[itr - 1]["velocities"])
 
             # Apply the boundary conditions if any exist
-            if self._boundary_map is not None:
-                self._fitness[itr]["params"] = self._boundary_map(self._fitness[itr]["params"])
+            if self._projection_fn is not None:
+                self._fitness[itr]["params"] = self._projection_fn(self._fitness[itr]["params"])
 
             # Calculate the fitness of the new positions
             self._fitness[itr]["fitness"] = self.evaluate_fitness(self._fitness[itr]["params"], 
@@ -548,17 +550,20 @@ class SPSATwoSiteOptimizer(Optimizer):
             ('fitness', np.float64)])
 
             
-class HeuristicPerformanceFitness(object):
-    def __init__(self, 
-                 param_names,
-                 evaluation_function = None, 
-                 *args, 
-                 **kwargs):
+class Fitness(with_metaclass(ABCMeta, object)):
+    @abstractmethod
+    def __call__(self, params):
+        pass
+
+class HeuristicPerformanceFitness(Fitness):
+    def __init__(self, param_names, evaluation_function=None,
+                 *args, **kwargs):
         try:
             self._heuristic_class = kwargs['heuristic_class']
             del kwargs['heuristic_class']
         except:
             raise NotImplementedError("No heuristic class was passed.")
+
         self._args = args
         self._kwargs = kwargs
         self._param_names = param_names
