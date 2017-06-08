@@ -70,5 +70,7 @@ from qinfer.simple_est import *
 from qinfer.resamplers import *
 from qinfer.domains import *
 
+from qinfer.optimization import *
+
 import qinfer.tomography
 
