@@ -43,20 +43,24 @@ __all__ = [
 import random
 import numpy as np
 from functools import partial
+
+from abc import ABCMeta, abstractmethod
+from future.utils import with_metaclass
+
 from qinfer.perf_testing import perf_test_multiple, apply_serial
 from qinfer import distributions
 
 ## CLASSES ####################################################################
 
-class Optimizer(object):
+class Optimizer(with_metaclass(ABCMeta, object)):
     '''
-        A generic optimizer class that is inherited by the other optimisation functions.
+    A generic optimizer class that is inherited by the other optimisation functions.
 
-        :param np.ndarray param_names: The list of parameters that are being searched over.
-        :param function fitness_function: The function that is being optimised over, defaults to perf test multiple
-        :param function boundary_map: Function to constrain points within some boundary regime
-        :param dict funct_args: Arguments to pass to the fitness function
-        :param dict funct_kwargs: Keyword arguments to pass to the fitness function
+    :param np.ndarray param_names: The list of parameters that are being searched over.
+    :param function fitness_function: The function that is being optimised over, defaults to perf test multiple
+    :param function boundary_map: Function to constrain points within some boundary regime
+    :param dict funct_args: Arguments to pass to the fitness function
+    :param dict funct_kwargs: Keyword arguments to pass to the fitness function
     '''
 
     def __init__(
@@ -99,6 +103,10 @@ class Optimizer(object):
     def update_positions(self, positions, velocities):
         updated = positions + velocities
         return updated
+
+    @abstractmethod
+    def __call__(self, *args, **kwargs):
+        pass
 
 class ParticleSwarmOptimizer(Optimizer):
     '''
