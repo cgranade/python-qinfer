@@ -47,7 +47,7 @@ from abc import ABCMeta, abstractmethod
 from future.utils import with_metaclass
 
 from qinfer.perf_testing import perf_test_multiple, apply_serial
-from qinfer import distributions
+from qinfer.distributions import UniformDistribution
 
 ## CLASSES ####################################################################
 
@@ -69,6 +69,7 @@ class Optimizer(with_metaclass(ABCMeta, object)):
 
     def __init__(self,
                  param_names, fitness_function=None, projection_fn=None,
+                 quiet=True,
                  *funct_args, **funct_kwargs):
 
         self._param_names = param_names
@@ -76,6 +77,7 @@ class Optimizer(with_metaclass(ABCMeta, object)):
         self._projection_fn = projection_fn
         self._funct_args = funct_args
         self._funct_kwargs = funct_kwargs
+        self._quiet = bool(quiet)
 
         if fitness_function is None: # Default to calling perf test multiple
             self._fitness_function = HeuristicPerformanceFitness(
@@ -83,28 +85,40 @@ class Optimizer(with_metaclass(ABCMeta, object)):
                 *self._funct_args,
                 **self._funct_kwargs
             )
-        else:
+        elif funct_args or funct_kwargs:
+            # Partially apply any arguments that we're given.
             self._fitness_function = partial(
                 fitness_function, *self._funct_args, **self._funct_kwargs
             )
+        else:
+            # Assume that the fitness function has already been constructed
+            # and is directly callable.
+            self._fitness_function = fitness_function
 
-    # Member function needed for parralelisation
-    def fitness_function(self, params):
+    def _report_iteration(self, idx_iter, fitnesses):
+        print("{: 3d} {:+1.3e}".format(idx_iter, np.max(fitnesses)))
+
+    # Member function needed for parallelization.
+    def fitness(self, params):
         return self._fitness_function(params)
 
     def parallel(self):
         raise NotImplementedError("This optimizer does not have parallel support.")
 
     def evaluate_fitness(self, particles, apply=apply_serial):
-        fitness_function = partial(self.fitness_function)
-        #fitness = map(self.fitness_function, particles)
+        # Use partial to wrap our fitness method; this makes it easier if
+        # the apply implementation we're given uses pickle to communicate with
+        # remote engines, as then the metadata in functools.partial will store a
+        # pickleable-reference to self.
+        fitness_function = partial(self.fitness)
+        # We then use the given apply implementation to asynchronously evaluate
+        # each fitness, then wait on the async results.
         results = [apply(self.fitness_function, particle) for particle in particles]
-        fitness = [result.get() for result in results]
-        return fitness
+
+        return [result.get() for result in results]
 
     def update_positions(self, positions, velocities):
-        updated = positions + velocities
-        return updated
+        return positions + velocities
 
     @abstractmethod
     def __call__(self, *args, **kwargs):
@@ -121,7 +135,37 @@ class ParticleSwarmOptimizer(Optimizer):
         :param double
         :param function
     '''
-    
+
+    def _initialize_particle_swarm(
+            self,
+            n_pso_iterations, n_pso_particles,
+            initial_position_distribution,
+            initial_velocity_distribution
+        ):
+        particles = np.empty([n_pso_iterations, n_pso_particles], dtype=self.particles_dt())
+
+        # Initialize positions, defaulting to the [0, 1] hypercube.
+        if initial_position_distribution is None:
+            initial_position_distribution = UniformDistribution(
+                np.array([[ 0, 1]] * self._n_free_params)
+            )
+        particles[0]["params"] = initial_position_distribution.sample(n_pso_particles)
+                    
+        # Project the initial particles to the feasible space as appropriate.
+        if self._projection_fn is not None:
+            particles[0]["params"] = self._projection_fn(self._particles[0]["params"])
+
+        # Initialize velocities, defaulting to the [-1, 1] hypercube.
+        if initial_velocity_distribution is None:
+            initial_velocity_distribution = UniformDistribution(
+                np.array([[-1, 1]] * self._n_free_params)
+            )
+        particles[0]["velocities"] = initial_velocity_distribution.sample(n_pso_particles)
+
+        return particles
+
+
+
     def __call__(self,
         n_pso_iterations=50,
         n_pso_particles=60,
@@ -132,71 +176,68 @@ class ParticleSwarmOptimizer(Optimizer):
         phi_g=0.5,
         apply=apply_serial
         ):
-        self._fitness = np.empty([n_pso_iterations, n_pso_particles], dtype=self.fitness_dt())
-        local_attractors = np.empty([n_pso_particles], dtype=self.fitness_dt())
-        global_attractor = np.empty([1], dtype=self.fitness_dt())
-
-        if initial_position_distribution is None:
-            initial_position_distribution = distributions.UniformDistribution(np.array([[ 0, 1]] * self._n_free_params))
-            
-        if initial_velocity_distribution is None:
-            initial_velocity_distribution = distributions.UniformDistribution(np.array([[-1, 1]] * self._n_free_params))
-        
-        # Initial particle positions
-        self._fitness[0]["params"] = initial_position_distribution.sample(n_pso_particles)
-            
-        # Apply the boundary conditions if any exist
-        if self._projection_fn is not None:
-            self._fitness[0]["params"] = self._projection_fn(self._fitness[0]["params"])
+        self._particles = self._initialize_particle_swarm(
+            n_pso_iterations, n_pso_particles,
+            initial_position_distribution, initial_velocity_distribution
+        )
+        local_attractors = np.empty([n_pso_particles], dtype=self.particles_dt())
+        global_attractor = np.empty([1], dtype=self.particles_dt())
 
         # Calculate the initial particle fitnesses
-        self._fitness[0]["fitness"] = self.evaluate_fitness(self._fitness[0]["params"], 
+        self._particles[0]["fitness"] = self.evaluate_fitness(self._particles[0]["params"], 
                                                             apply=apply)
 
         # Calculate the positions of the attractors
-        local_attractors = self._fitness[0]
+        local_attractors = self._particles[0]
         local_attractors, global_attractor = self.update_attractors(
-                                                self._fitness[0], 
+                                                self._particles[0], 
                                                 local_attractors, 
                                                 global_attractor)
 
         # Initial particle velocities
-        self._fitness[0]["velocities"] = initial_velocity_distribution.sample(n_pso_particles)
-        self._fitness[0]["velocities"] = self.update_velocities(
-                                                self._fitness[0]["params"], 
-                                                self._fitness[0]["velocities"], 
+        self._particles[0]["velocities"] = self.update_velocities(
+                                                self._particles[0]["params"], 
+                                                self._particles[0]["velocities"], 
                                                 local_attractors["params"],
                                                 global_attractor["params"],
                                                 omega_v, phi_p, phi_g)
 
-        for itr in range(1, n_pso_iterations):
+        # Report the first iteration.
+        self._report_iteration(0, self._particles[0]['fitness'])
+
+        for idx_iter in range(1, n_pso_iterations):
+            previous_particles, current_particles = self._particles[idx_iter - 1:idx_iter + 1]
+
             #Update the particle positions
-            self._fitness[itr]["params"] = self.update_positions(
-                self._fitness[itr - 1]["params"], 
-                self._fitness[itr - 1]["velocities"])
+            current_particles["params"] = self.update_positions(
+                previous_particles["params"],
+                previous_particles["velocities"]
+            )
 
             # Apply the boundary conditions if any exist
             if self._projection_fn is not None:
-                self._fitness[itr]["params"] = self._projection_fn(self._fitness[itr]["params"])
+                current_particles["params"] = self._projection_fn(current_particles["params"])
 
             # Recalculate the fitness function
-            self._fitness[itr]["fitness"] = self.evaluate_fitness(
-                self._fitness[itr]["params"],
+            self._particles[idx_iter]["fitness"] = self.evaluate_particles(
+                self._particles[idx_iter]["params"],
                 apply=apply)
 
             # Find the new attractors
             local_attractors, global_attractor = self.update_attractors(
-                self._fitness[itr], 
-                local_attractors, 
-                global_attractor)
+                current_particles,
+                local_attractors,
+                global_attractor
+            )
 
             # Update the velocities
-            self._fitness[itr]["velocities"] = self.update_velocities(
-                self._fitness[itr]["params"], 
-                self._fitness[itr - 1]["velocities"], 
+            self._particles[idx_iter]["velocities"] = self.update_velocities(
+                current_particles["params"],
+                previous_particles["velocities"],
                 local_attractors["params"],
                 global_attractor["params"],
-                omega_v, phi_p, phi_g)
+                omega_v, phi_p, phi_g
+            )
 
         return global_attractor
 
@@ -213,7 +254,7 @@ class ParticleSwarmOptimizer(Optimizer):
         global_attractor = local_attractors[np.argmin(local_attractors["fitness"])]
         return local_attractors, global_attractor
 
-    def fitness_dt(self):
+    def particles_dt(self):
         return np.dtype([
             ('params', np.float64, (self._n_free_params,)),
             ('velocities', np.float64, (self._n_free_params,)),
@@ -233,22 +274,12 @@ class ParticleSwarmSimpleAnnealingOptimizer(ParticleSwarmOptimizer):
         temperature = 0.95,
         apply=apply_serial
         ):
-        self._fitness = np.empty([n_pso_iterations, n_pso_particles], dtype=self.fitness_dt())
-        local_attractors = np.empty([n_pso_particles], dtype=self.fitness_dt())
-        global_attractor = np.empty([1], dtype=self.fitness_dt())
-
-        if initial_position_distribution is None:
-            initial_position_distribution = distributions.UniformDistribution(np.array([[ 0, 1]] * self._n_free_params));
-            
-        if initial_velocity_distribution is None:
-            initial_velocity_distribution = distributions.UniformDistribution(np.array([[-1, 1]] * self._n_free_params))
-        
-        # Initial particle positions
-        self._fitness[0]["params"] = initial_position_distribution.sample(n_pso_particles)
-            
-        # Apply the boundary conditions if any exist
-        if self._projection_fn is not None:
-            self._fitness[0]["params"] = self._projection_fn(self._fitness[0]["params"])
+        self._fitness = self._initialize_particle_swarm(
+            n_pso_iterations, n_pso_particles,
+            initial_position_distribution, initial_velocity_distribution
+        )
+        local_attractors = np.empty([n_pso_particles], dtype=self.particles_dt())
+        global_attractor = np.empty([1], dtype=self.particles_dt())
 
         # Calculate the initial particle fitnesses
         self._fitness[0]["fitness"] = self.evaluate_fitness(self._fitness[0]["params"], 
@@ -262,7 +293,6 @@ class ParticleSwarmSimpleAnnealingOptimizer(ParticleSwarmOptimizer):
                                                 global_attractor)
 
         # Initial particle velocities
-        self._fitness[0]["velocities"] = initial_velocity_distribution.sample(n_pso_particles)
         self._fitness[0]["velocities"] = self.update_velocities(
                                                 self._fitness[0]["params"], 
                                                 self._fitness[0]["velocities"], 
@@ -335,15 +365,15 @@ class ParticleSwarmTemperingOptimizer(ParticleSwarmOptimizer):
         temper_params = None,
         apply=apply_serial
         ):
-        self._fitness = np.empty([n_pso_iterations, n_pso_particles], dtype=self.fitness_dt())
-        local_attractors = np.empty([n_pso_particles], dtype=self.fitness_dt())
-        global_attractor = np.empty([1], dtype=self.fitness_dt())
+        self._fitness = np.empty([n_pso_iterations, n_pso_particles], dtype=self.particles_dt())
+        local_attractors = np.empty([n_pso_particles], dtype=self.particles_dt())
+        global_attractor = np.empty([1], dtype=self.particles_dt())
 
         if initial_position_distribution is None:
-            initial_position_distribution = distributions.UniformDistribution(np.array([[ 0, 1]] * self._n_free_params));
+            initial_position_distribution = UniformDistribution(np.array([[ 0, 1]] * self._n_free_params));
             
         if initial_velocity_distribution is None:
-            initial_velocity_distribution = distributions.UniformDistribution(np.array([[-1, 1]] * self._n_free_params))
+            initial_velocity_distribution = UniformDistribution(np.array([[-1, 1]] * self._n_free_params))
 
         if temper_params is None:
             omega_v = np.random.random(n_temper_categories)
@@ -408,6 +438,8 @@ class ParticleSwarmTemperingOptimizer(ParticleSwarmOptimizer):
                 global_attractor)
 
             # Update the velocities
+            # FIXME: idx isn't actually used here, except to effectively associate
+            #        temper_map and temper_params. Should be able to zip.
             for idx, temper_category in enumerate(temper_map):
                 self._fitness[itr]["velocities"][temper_category] = self.update_velocities(
                                                     self._fitness[itr]["params"][temper_category], 
@@ -479,10 +511,10 @@ class SPSATwoSiteOptimizer(Optimizer):
         apply=apply_serial
         ):
 
-        self._fitness = np.empty([n_spsa_iterations, n_spsa_particles], dtype=self.fitness_dt())
+        self._fitness = np.empty([n_spsa_iterations, n_spsa_particles], dtype=self.particles_dt())
 
         if initial_position_distribution is None:
-            initial_position_distribution = distributions.UniformDistribution(np.array([[0, 1]] * self._n_free_params));
+            initial_position_distribution = UniformDistribution(np.array([[0, 1]] * self._n_free_params));
               
         # Initial particle positions
         self._fitness[0]["params"] = initial_position_distribution.sample(n_spsa_particles)
@@ -543,7 +575,7 @@ class SPSATwoSiteOptimizer(Optimizer):
     def update_velocities(self, first_site, second_site, alpha, beta, delta):
         return delta * beta * (first_site - second_site) / (2* alpha)
     
-    def fitness_dt(self):
+    def particles_dt(self):
         return np.dtype([
             ('params', np.float64, (self._n_free_params,)),
             ('velocities', np.float64, (self._n_free_params,)),
