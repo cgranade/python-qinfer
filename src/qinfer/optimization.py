@@ -187,7 +187,7 @@ class ParticleSwarmOptimizer(Optimizer):
             apply=apply
         )
         local_attractors, global_attractor = self.update_attractors(
-            self._particles
+            self._particles[0]
         )
 
         # Initial particle velocities
@@ -247,16 +247,22 @@ class ParticleSwarmOptimizer(Optimizer):
         # to initialize the PSO, so let's pick them to be the current particle
         # locations.
         if local_attractors is None:
-            local_attractors = particles[0, :].copy()
+            local_attractors = particles.copy()
 
-        for idx, particle in enumerate(particles):
-            # If the particle under consideration is better (lower fitness)
-            # than its personal best (the corresponding local attractor),
-            # then we need to update that local attractor.
-            if particle["fitness"] < local_attractors[idx]["fitness"]:
-                local_attractors[idx] = particle
+        # If we do have attractors, though, then we need to check if our
+        # current particles do better than them, and update accordingly.
+        else:
+            for idx, particle in enumerate(particles):
+                # If the particle under consideration is better (lower fitness)
+                # than its personal best (the corresponding local attractor),
+                # then we need to update that local attractor.
+                if particle["fitness"] < local_attractors[idx]["fitness"]:
+                    local_attractors[idx] = particle
 
+        # In either case, the new global attractor should be the best (smallest) fitness
+        # we've seen so far.
         global_attractor = local_attractors[np.argmin(local_attractors["fitness"])].copy()
+        
         return local_attractors, global_attractor
 
     def particles_dt(self):
