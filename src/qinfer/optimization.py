@@ -113,7 +113,7 @@ class Optimizer(with_metaclass(ABCMeta, object)):
         fitness_function = partial(self.fitness)
         # We then use the given apply implementation to asynchronously evaluate
         # each fitness, then wait on the async results.
-        results = [apply(self.fitness_function, particle) for particle in particles]
+        results = [apply(fitness_function, particle) for particle in particles]
 
         return [result.get() for result in results]
 
@@ -147,13 +147,13 @@ class ParticleSwarmOptimizer(Optimizer):
         # Initialize positions, defaulting to the [0, 1] hypercube.
         if initial_position_distribution is None:
             initial_position_distribution = UniformDistribution(
-                np.array([[ 0, 1]] * self._n_free_params)
+                np.array([[0, 1]] * self._n_free_params)
             )
         particles[0]["params"] = initial_position_distribution.sample(n_pso_particles)
-                    
+
         # Project the initial particles to the feasible space as appropriate.
         if self._projection_fn is not None:
-            particles[0]["params"] = self._projection_fn(self._particles[0]["params"])
+            particles[0]["params"] = self._projection_fn(particles[0]["params"])
 
         # Initialize velocities, defaulting to the [-1, 1] hypercube.
         if initial_velocity_distribution is None:
@@ -219,7 +219,7 @@ class ParticleSwarmOptimizer(Optimizer):
                 current_particles["params"] = self._projection_fn(current_particles["params"])
 
             # Recalculate the fitness function
-            self._particles[idx_iter]["fitness"] = self.evaluate_particles(
+            self._particles[idx_iter]["fitness"] = self.evaluate_fitness(
                 self._particles[idx_iter]["params"],
                 apply=apply)
 
