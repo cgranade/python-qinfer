@@ -46,7 +46,7 @@ from functools import partial
 from abc import ABCMeta, abstractmethod
 from future.utils import with_metaclass
 
-from qinfer.perf_testing import perf_test_multiple, apply_serial
+from qinfer.perf_testing import perf_test_multiple, apply_serial, timing
 from qinfer.distributions import UniformDistribution
 
 ## CLASSES ####################################################################
@@ -95,8 +95,11 @@ class Optimizer(with_metaclass(ABCMeta, object)):
             # and is directly callable.
             self._fitness_function = fitness_function
 
-    def _report_iteration(self, idx_iter, fitnesses):
-        print("{: 3d} {:+1.3e}".format(idx_iter, np.max(fitnesses)))
+    def _report_iteration(self, idx_iter, fitnesses, elapsed_time=None):
+        print("{: 3d}\t{:+1.3e}\t{}".format(
+            idx_iter, np.max(fitnesses),
+            elapsed_time if elapsed_time else ""
+        ))
 
     # Member function needed for parallelization.
     def fitness(self, params):
@@ -150,86 +153,74 @@ class ParticleSwarmOptimizer(Optimizer):
             omega_v, phi_p, phi_g,
             apply
         ):
-        particles = np.empty([n_pso_iterations, n_pso_particles], dtype=self.particles_dt())
 
-        # Initialize positions, defaulting to the [0, 1] hypercube.
-        if initial_position_distribution is None:
-            initial_position_distribution = UniformDistribution(
-                np.array([[0, 1]] * self._n_free_params)
+        with timing() as elapsed_time:
+            particles = np.empty([n_pso_iterations, n_pso_particles], dtype=self.particles_dt())
+
+            # Initialize positions, defaulting to the [0, 1] hypercube.
+            if initial_position_distribution is None:
+                initial_position_distribution = UniformDistribution(
+                    np.array([[0, 1]] * self._n_free_params)
+                )
+            particles[0]["params"] = initial_position_distribution.sample(n_pso_particles)
+
+            # Find the fitnesses of the initial particles.
+            particles[0]["fitness"] = self.evaluate_fitness(
+                particles[0]["params"], apply=apply
             )
-        particles[0]["params"] = initial_position_distribution.sample(n_pso_particles)
 
-        # Find the fitnesses of the initial particles.
-        particles[0]["fitness"] = self.evaluate_fitness(
-            particles[0]["params"], apply=apply
-        )
+            # Project the initial particles to the feasible space as appropriate.
+            particles[0]["params"] = self.project(particles[0]["params"])
 
-        # Project the initial particles to the feasible space as appropriate.
-        particles[0]["params"] = self.project(particles[0]["params"])
+            # Initialize velocities, defaulting to the [-1, 1] hypercube.
+            if initial_velocity_distribution is None:
+                initial_velocity_distribution = UniformDistribution(
+                    np.array([[-1, 1]] * self._n_free_params)
+                )
+            particles[0]["velocities"] = initial_velocity_distribution.sample(n_pso_particles)
 
-        # Initialize velocities, defaulting to the [-1, 1] hypercube.
-        if initial_velocity_distribution is None:
-            initial_velocity_distribution = UniformDistribution(
-                np.array([[-1, 1]] * self._n_free_params)
+            # Initialize the attractors.
+            local_attractors, global_attractor = self.update_attractors(
+                particles[0]
             )
-        particles[0]["velocities"] = initial_velocity_distribution.sample(n_pso_particles)
 
-        # Initialize the attractors.
-        local_attractors, global_attractor = self.update_attractors(
-            particles[0]
-        )
-
-        # Use the initialized attractors to set the initial velocities.
-        particles[0]["velocities"] = self.update_velocities(
-            particles[0]["params"],
-            particles[0]["velocities"],
-            local_attractors["params"],
-            global_attractor["params"],
-            omega_v, phi_p, phi_g
-        )
+            # Use the initialized attractors to set the initial velocities.
+            particles[0]["velocities"] = self.update_velocities(
+                particles[0]["params"],
+                particles[0]["velocities"],
+                local_attractors["params"],
+                global_attractor["params"],
+                omega_v, phi_p, phi_g
+            )
+        
+        # Report the first iteration.
+        self._report_iteration(0, particles[0]['fitness'], elapsed_time)
 
         return particles, local_attractors, global_attractor
 
-    def __call__(self,
-        n_pso_iterations=50,
-        n_pso_particles=60,
-        initial_position_distribution=None,
-        initial_velocity_distribution=None,
-        omega_v=0.35, 
-        phi_p=0.25, 
-        phi_g=0.5,
-        apply=apply_serial,
-        return_all=False
-        ):
-
-        particles, local_attractors, global_attractor = self._initialize_particle_swarm(
-            n_pso_iterations, n_pso_particles,
-            initial_position_distribution, initial_velocity_distribution,
-            omega_v, phi_p, phi_g,
-            apply=apply
-        )
-
-        # Report the first iteration.
-        self._report_iteration(0, particles[0]['fitness'])
-
-        for idx_iter in range(1, n_pso_iterations):
-            previous_particles, current_particles = particles[idx_iter - 1:idx_iter + 1]
-
-            #Update the particle positions
+    def _pso_iteration(
+        self, idx_iter, previous_particles, current_particles,
+        local_attractors,
+        omega_v, phi_p, phi_g,
+        apply
+    ):
+        with timing() as elapsed_time:
+            # Update the particle positions using their current velocities.
             current_particles["params"] = self.update_positions(
                 previous_particles["params"],
                 previous_particles["velocities"]
             )
 
-            # Apply the boundary conditions if any exist
+            # Project back any particles which left the space of feasible solutions.
             current_particles["params"] = self.project(current_particles["params"])
 
-            # Recalculate the fitness function
-            particles[idx_iter]["fitness"] = self.evaluate_fitness(
-                particles[idx_iter]["params"],
-                apply=apply)
+            # Recalculate the fitness function at the new particle positions.
+            current_particles["fitness"] = self.evaluate_fitness(
+                current_particles["params"],
+                apply=apply
+            )
 
-            # Find the new attractors
+            # Find the new attractors.
             local_attractors, global_attractor = self.update_attractors(
                 current_particles,
                 local_attractors
@@ -242,6 +233,40 @@ class ParticleSwarmOptimizer(Optimizer):
                 local_attractors["params"],
                 global_attractor["params"],
                 omega_v, phi_p, phi_g
+            )
+
+        self._report_iteration(idx_iter, current_particles["fitness"], elapsed_time)
+
+        return local_attractors, global_attractor
+
+    def __call__(
+        self,
+        n_pso_iterations=50,
+        n_pso_particles=60,
+        initial_position_distribution=None,
+        initial_velocity_distribution=None,
+        omega_v=0.35, 
+        phi_p=0.25, 
+        phi_g=0.5,
+        apply=apply_serial,
+        return_all=False
+    ):
+
+        particles, local_attractors, global_attractor = self._initialize_particle_swarm(
+            n_pso_iterations, n_pso_particles,
+            initial_position_distribution, initial_velocity_distribution,
+            omega_v, phi_p, phi_g,
+            apply=apply
+        )
+
+        for idx_iter in range(1, n_pso_iterations):
+            previous_particles, current_particles = particles[idx_iter - 1:idx_iter + 1]
+            local_attractors, global_attractor = self._pso_iteration(
+                idx_iter,
+                previous_particles, current_particles,
+                local_attractors,
+                omega_v, phi_p, phi_g,
+                apply
             )
 
         if return_all:
