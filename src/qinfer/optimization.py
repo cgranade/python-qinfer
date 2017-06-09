@@ -97,7 +97,7 @@ class Optimizer(with_metaclass(ABCMeta, object)):
 
     def _report_iteration(self, idx_iter, fitnesses, elapsed_time=None):
         print("{: 3d}\t{:+1.3e}\t{}".format(
-            idx_iter, np.max(fitnesses),
+            idx_iter, np.min(fitnesses),
             elapsed_time if elapsed_time else ""
         ))
 
