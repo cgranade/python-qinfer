@@ -199,10 +199,10 @@ class ParticleSwarmOptimizer(Optimizer):
         return particles, local_attractors, global_attractor
 
     def _pso_iteration(
-        self, idx_iter, previous_particles, current_particles,
-        local_attractors,
-        omega_v, phi_p, phi_g,
-        apply
+            self, idx_iter, previous_particles, current_particles,
+            local_attractors,
+            omega_v, phi_p, phi_g,
+            apply
     ):
         with timing() as elapsed_time:
             # Update the particle positions using their current velocities.
@@ -240,16 +240,16 @@ class ParticleSwarmOptimizer(Optimizer):
         return local_attractors, global_attractor
 
     def __call__(
-        self,
-        n_pso_iterations=50,
-        n_pso_particles=60,
-        initial_position_distribution=None,
-        initial_velocity_distribution=None,
-        omega_v=0.35, 
-        phi_p=0.25, 
-        phi_g=0.5,
-        apply=apply_serial,
-        return_all=False
+            self,
+            n_pso_iterations=50,
+            n_pso_particles=60,
+            initial_position_distribution=None,
+            initial_velocity_distribution=None,
+            omega_v=0.35,
+            phi_p=0.25,
+            phi_g=0.5,
+            apply=apply_serial,
+            return_all=False
     ):
 
         particles, local_attractors, global_attractor = self._initialize_particle_swarm(
@@ -314,60 +314,51 @@ class ParticleSwarmOptimizer(Optimizer):
 
 class ParticleSwarmSimpleAnnealingOptimizer(ParticleSwarmOptimizer):
 
-    def __call__(self,
-        n_pso_iterations=50,
-        n_pso_particles=60,
-        initial_position_distribution=None,
-        initial_velocity_distribution=None,
-        omega_v=0.35, 
-        phi_p=0.25, 
-        phi_g=0.5,
-        temperature = 0.95,
-        apply=apply_serial
-        ):
-        self._fitness, local_attractors, global_attractor = self._initialize_particle_swarm(
+    def __call__(
+            self,
+            n_pso_iterations=50,
+            n_pso_particles=60,
+            initial_position_distribution=None,
+            initial_velocity_distribution=None,
+            omega_v=0.35,
+            phi_p=0.25,
+            phi_g=0.5,
+            temperature=0.95,
+            apply=apply_serial,
+            return_all=False
+    ):
+
+        particles, local_attractors, global_attractor = self._initialize_particle_swarm(
             n_pso_iterations, n_pso_particles,
             initial_position_distribution, initial_velocity_distribution,
             omega_v, phi_p, phi_g,
-            apply
+            apply=apply
         )
 
-        for itr in range(1, n_pso_iterations):
-            #Update the particle positions
-            self._fitness[itr]["params"] = self.update_positions(
-                self._fitness[itr - 1]["params"], 
-                self._fitness[itr - 1]["velocities"])
+        for idx_iter in range(1, n_pso_iterations):
+            previous_particles, current_particles = particles[idx_iter - 1:idx_iter + 1]
+            local_attractors, global_attractor = self._pso_iteration(
+                idx_iter,
+                previous_particles, current_particles,
+                local_attractors,
+                omega_v, phi_p, phi_g,
+                apply
+            )
 
-            # Apply the boundary conditions if any exist
-            if self._projection_fn is not None:
-                self._fitness[itr]["params"] = self._projection_fn(self._fitness[itr]["params"])
-
-            # Recalculate the fitness function
-            self._fitness[itr]["fitness"] = self.evaluate_fitness(
-                self._fitness[itr]["params"],
-                apply=apply)
-
-            # Find the new attractors
-            local_attractors, global_attractor = self.update_attractors(
-                self._fitness[itr], 
-                local_attractors)
-
-            # Update the velocities
-            self._fitness[itr]["velocities"] = self.update_velocities(
-                self._fitness[itr]["params"], 
-                self._fitness[itr - 1]["velocities"], 
-                local_attractors["params"],
-                global_attractor["params"],
-                omega_v, phi_p, phi_g)
-
-            # Update the PSO params
+            # Update the PSO params by using a simple annealing rule.
             omega_v, phi_p, phi_g = self.update_pso_params(
                 temperature,
-                omega_v, 
-                phi_p, 
-                phi_g)
+                omega_v,
+                phi_p,
+                phi_g
+            )
 
-        return global_attractor
+        if return_all:
+            return global_attractor, {
+                'particles': particles
+            }
+        else:
+            return global_attractor
 
     def update_pso_params(self, temperature, omega_v, phi_p, phi_g):
         omega_v, phi_p, phi_g = np.multiply(temperature, [omega_v, phi_p, phi_g])
