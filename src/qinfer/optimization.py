@@ -105,6 +105,12 @@ class Optimizer(with_metaclass(ABCMeta, object)):
     def parallel(self):
         raise NotImplementedError("This optimizer does not have parallel support.")
 
+    def project(self, params):
+        if self._projection_fn:
+            return self._projection_fn(params)
+        else:
+            return params
+
     def evaluate_fitness(self, particles, apply=apply_serial):
         # Use partial to wrap our fitness method; this makes it easier if
         # the apply implementation we're given uses pickle to communicate with
@@ -141,6 +147,7 @@ class ParticleSwarmOptimizer(Optimizer):
             n_pso_iterations, n_pso_particles,
             initial_position_distribution,
             initial_velocity_distribution,
+            omega_v, phi_p, phi_g,
             apply
         ):
         particles = np.empty([n_pso_iterations, n_pso_particles], dtype=self.particles_dt())
@@ -158,8 +165,7 @@ class ParticleSwarmOptimizer(Optimizer):
         )
 
         # Project the initial particles to the feasible space as appropriate.
-        if self._projection_fn is not None:
-            particles[0]["params"] = self._projection_fn(particles[0]["params"])
+        particles[0]["params"] = self.project(particles[0]["params"])
 
         # Initialize velocities, defaulting to the [-1, 1] hypercube.
         if initial_velocity_distribution is None:
@@ -168,7 +174,21 @@ class ParticleSwarmOptimizer(Optimizer):
             )
         particles[0]["velocities"] = initial_velocity_distribution.sample(n_pso_particles)
 
-        return particles
+        # Initialize the attractors.
+        local_attractors, global_attractor = self.update_attractors(
+            particles[0]
+        )
+
+        # Use the initialized attractors to set the initial velocities.
+        particles[0]["velocities"] = self.update_velocities(
+            particles[0]["params"],
+            particles[0]["velocities"],
+            local_attractors["params"],
+            global_attractor["params"],
+            omega_v, phi_p, phi_g
+        )
+
+        return particles, local_attractors, global_attractor
 
     def __call__(self,
         n_pso_iterations=50,
@@ -178,31 +198,22 @@ class ParticleSwarmOptimizer(Optimizer):
         omega_v=0.35, 
         phi_p=0.25, 
         phi_g=0.5,
-        apply=apply_serial
+        apply=apply_serial,
+        return_all=False
         ):
 
-        self._particles = self._initialize_particle_swarm(
+        particles, local_attractors, global_attractor = self._initialize_particle_swarm(
             n_pso_iterations, n_pso_particles,
             initial_position_distribution, initial_velocity_distribution,
+            omega_v, phi_p, phi_g,
             apply=apply
         )
-        local_attractors, global_attractor = self.update_attractors(
-            self._particles[0]
-        )
-
-        # Initial particle velocities
-        self._particles[0]["velocities"] = self.update_velocities(
-                                                self._particles[0]["params"], 
-                                                self._particles[0]["velocities"], 
-                                                local_attractors["params"],
-                                                global_attractor["params"],
-                                                omega_v, phi_p, phi_g)
 
         # Report the first iteration.
-        self._report_iteration(0, self._particles[0]['fitness'])
+        self._report_iteration(0, particles[0]['fitness'])
 
         for idx_iter in range(1, n_pso_iterations):
-            previous_particles, current_particles = self._particles[idx_iter - 1:idx_iter + 1]
+            previous_particles, current_particles = particles[idx_iter - 1:idx_iter + 1]
 
             #Update the particle positions
             current_particles["params"] = self.update_positions(
@@ -211,12 +222,11 @@ class ParticleSwarmOptimizer(Optimizer):
             )
 
             # Apply the boundary conditions if any exist
-            if self._projection_fn is not None:
-                current_particles["params"] = self._projection_fn(current_particles["params"])
+            current_particles["params"] = self.project(current_particles["params"])
 
             # Recalculate the fitness function
-            self._particles[idx_iter]["fitness"] = self.evaluate_fitness(
-                self._particles[idx_iter]["params"],
+            particles[idx_iter]["fitness"] = self.evaluate_fitness(
+                particles[idx_iter]["params"],
                 apply=apply)
 
             # Find the new attractors
@@ -226,7 +236,7 @@ class ParticleSwarmOptimizer(Optimizer):
             )
 
             # Update the velocities
-            self._particles[idx_iter]["velocities"] = self.update_velocities(
+            current_particles["velocities"] = self.update_velocities(
                 current_particles["params"],
                 previous_particles["velocities"],
                 local_attractors["params"],
@@ -234,7 +244,12 @@ class ParticleSwarmOptimizer(Optimizer):
                 omega_v, phi_p, phi_g
             )
 
-        return global_attractor
+        if return_all:
+            return global_attractor, {
+                'particles': particles
+            }
+        else:
+            return global_attractor
 
     def update_velocities(self, positions, velocities, local_attractors, global_attractor, omega_v, phi_p, phi_g):
         random_p = np.random.random_sample(positions.shape)
@@ -262,7 +277,7 @@ class ParticleSwarmOptimizer(Optimizer):
         # In either case, the new global attractor should be the best (smallest) fitness
         # we've seen so far.
         global_attractor = local_attractors[np.argmin(local_attractors["fitness"])].copy()
-        
+
         return local_attractors, global_attractor
 
     def particles_dt(self):
@@ -285,21 +300,12 @@ class ParticleSwarmSimpleAnnealingOptimizer(ParticleSwarmOptimizer):
         temperature = 0.95,
         apply=apply_serial
         ):
-        self._fitness = self._initialize_particle_swarm(
+        self._fitness, local_attractors, global_attractor = self._initialize_particle_swarm(
             n_pso_iterations, n_pso_particles,
-            initial_position_distribution, initial_velocity_distribution
+            initial_position_distribution, initial_velocity_distribution,
+            omega_v, phi_p, phi_g,
+            apply
         )
-        local_attractors, global_attractor = self.update_attractors(
-            self._fitness[0]
-        )
-
-        # Initial particle velocities
-        self._fitness[0]["velocities"] = self.update_velocities(
-                                                self._fitness[0]["params"], 
-                                                self._fitness[0]["velocities"], 
-                                                local_attractors["params"],
-                                                global_attractor["params"],
-                                                omega_v, phi_p, phi_g)
 
         for itr in range(1, n_pso_iterations):
             #Update the particle positions
