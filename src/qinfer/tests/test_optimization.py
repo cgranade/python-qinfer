@@ -1,7 +1,7 @@
 #!/usr/bin/python
 # -*- coding: utf-8 -*-
 ##
-# test_distributions.py: Checks that distribution objects act as expected.
+# test_optimization.py: Tests of optimization classes.
 ##
 # © 2014 Chris Ferrie (csferrie@gmail.com) and
 #        Christopher E. Granade (cgranade@gmail.com)
@@ -37,7 +37,7 @@ from qinfer.tests.base_test import DerandomizedTestCase
 import qinfer.rb as rb
 import qinfer.distributions as dist
 
-from qinfer.hyper_heuristic_optimisers import (
+from qinfer.optimization import (
     ParticleSwarmOptimizer,
     ParticleSwarmSimpleAnnealingOptimizer,
     ParticleSwarmTemperingOptimizer
