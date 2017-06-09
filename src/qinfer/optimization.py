@@ -421,8 +421,7 @@ class ParticleSwarmTemperingOptimizer(ParticleSwarmOptimizer):
         local_attractors = self._fitness[0]
         local_attractors, global_attractor = self.update_attractors(
                                                 self._fitness[0], 
-                                                local_attractors, 
-                                                global_attractor)
+                                                local_attractors)
 
         # Initial particle velocities
         self._fitness[0]["velocities"] = initial_velocity_distribution.sample(n_pso_particles)
@@ -456,8 +455,7 @@ class ParticleSwarmTemperingOptimizer(ParticleSwarmOptimizer):
             # Find the new attractors
             local_attractors, global_attractor = self.update_attractors(
                 self._fitness[itr], 
-                local_attractors, 
-                global_attractor)
+                local_attractors)
 
             # Update the velocities
             # FIXME: idx isn't actually used here, except to effectively associate

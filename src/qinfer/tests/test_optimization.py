@@ -74,7 +74,7 @@ class OptimizerTestMethods(object):
         # Define our experiment
         n_trials = 20 # Times we repeat the set of experiments
         n_exp = 100 # Number of experiments in the set
-        n_particles = 4000 # Number of points we track during the experiment
+        n_particles = 2000 # Number of points we track during the experiment
 
         # Model for the experiment
         model = rb.RandomizedBenchmarkingModel()
