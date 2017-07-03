@@ -43,7 +43,7 @@ import random
 import numpy as np
 from functools import partial
 
-from abc import ABCMeta, abstractmethod
+from abc import ABCMeta, abstractmethod, abstractproperty
 from future.utils import with_metaclass
 
 from qinfer.perf_testing import perf_test_multiple, apply_serial, timing
@@ -81,7 +81,6 @@ class Optimizer(with_metaclass(ABCMeta, object)):
 
         if fitness_function is None: # Default to calling perf test multiple
             self._fitness_function = HeuristicPerformanceFitness(
-                self._param_names,
                 *self._funct_args,
                 **self._funct_kwargs
             )
@@ -101,9 +100,15 @@ class Optimizer(with_metaclass(ABCMeta, object)):
             elapsed_time if elapsed_time else ""
         ))
 
+    def _params_as_kwargs(self, params):
+        return {
+            param_name: value
+            for param_name, value in zip(self._param_names, params)
+        }
+
     # Member function needed for parallelization.
     def fitness(self, params):
-        return self._fitness_function(params)
+        return self._fitness_function(**self._params_as_kwargs(params))
 
     def parallel(self):
         raise NotImplementedError("This optimizer does not have parallel support.")
@@ -239,6 +244,13 @@ class ParticleSwarmOptimizer(Optimizer):
 
         return local_attractors, global_attractor
 
+    def _result_dict(self, particles, global_attractor):
+        return {
+            'result': self._params_as_kwargs(global_attractor["params"]),
+            'fitness': global_attractor["fitness"],
+            'particles': particles
+        }
+
     def __call__(
             self,
             n_pso_iterations=50,
@@ -248,8 +260,7 @@ class ParticleSwarmOptimizer(Optimizer):
             omega_v=0.35,
             phi_p=0.25,
             phi_g=0.5,
-            apply=apply_serial,
-            return_all=False
+            apply=apply_serial
     ):
 
         particles, local_attractors, global_attractor = self._initialize_particle_swarm(
@@ -269,12 +280,7 @@ class ParticleSwarmOptimizer(Optimizer):
                 apply
             )
 
-        if return_all:
-            return global_attractor, {
-                'particles': particles
-            }
-        else:
-            return global_attractor
+        return self._result_dict(particles, global_attractor)
 
     def update_velocities(self, positions, velocities, local_attractors, global_attractor, omega_v, phi_p, phi_g):
         random_p = np.random.random_sample(positions.shape)
@@ -324,8 +330,7 @@ class ParticleSwarmSimpleAnnealingOptimizer(ParticleSwarmOptimizer):
             phi_p=0.25,
             phi_g=0.5,
             temperature=0.95,
-            apply=apply_serial,
-            return_all=False
+            apply=apply_serial
     ):
 
         particles, local_attractors, global_attractor = self._initialize_particle_swarm(
@@ -353,12 +358,7 @@ class ParticleSwarmSimpleAnnealingOptimizer(ParticleSwarmOptimizer):
                 phi_g
             )
 
-        if return_all:
-            return global_attractor, {
-                'particles': particles
-            }
-        else:
-            return global_attractor
+        return self._result_dict(particles, global_attractor)
 
     def update_pso_params(self, temperature, omega_v, phi_p, phi_g):
         omega_v, phi_p, phi_g = np.multiply(temperature, [omega_v, phi_p, phi_g])
@@ -474,7 +474,7 @@ class ParticleSwarmTemperingOptimizer(ParticleSwarmOptimizer):
             if itr % temper_frequency == 0:
                 temper_map = self.distribute_particles(n_pso_particles, n_temper_categories)
                 
-        return global_attractor
+        return self._result_dict(self._fitness, global_attractor)
     
     def temper_params_dt(self):
             return np.dtype([
@@ -608,7 +608,7 @@ class Fitness(with_metaclass(ABCMeta, object)):
         pass
 
 class HeuristicPerformanceFitness(Fitness):
-    def __init__(self, param_names, evaluation_function=None,
+    def __init__(self, evaluation_function=None,
                  *args, **kwargs):
         try:
             self._heuristic_class = kwargs['heuristic_class']
@@ -616,23 +616,21 @@ class HeuristicPerformanceFitness(Fitness):
         except:
             raise NotImplementedError("No heuristic class was passed.")
 
-        self._args = args
-        self._kwargs = kwargs
-        self._param_names = param_names
+        self._perf_test_args = args
+        self._perf_test_kwargs = kwargs
         if evaluation_function is None:
             self._evaluation_function = lambda performance: performance['loss'][:,-1].mean(axis=0)
         else:
             self._evaluation_function = evaluation_function
         
-    def __call__(self, params):
+    def __call__(self, **heuristic_kwargs):
         performance = perf_test_multiple(
-            *self._args,
-            heuristic_class = partial(
+            *self._perf_test_args,
+            heuristic_class=partial(
                 self._heuristic_class, 
-                **{name: param
-                    for name, param in zip(self._param_names, params)
-                }),
-                **self._kwargs
+                **heuristic_kwargs
+            ),
+            **self._perf_test_kwargs
         )
         
         return self._evaluation_function(performance)
